@@ -1,6 +1,4 @@
-
-%只考虑3个状态量的MPC
-%% MPC系列matlab.m文件写轨迹跟踪代码
+%%只考虑3个状态量(x,y,yaw)的MPC
 %清屏函数
 clc;
 clear;
@@ -8,8 +6,8 @@ close all;
 %% 控制器参数设计
 Nx=3;%状态量个数
 Nu =2;%控制量个数
-Np =20;%预测步长
-Nc=10;%控制步长
+Np =20;%预测时域
+Nc=10;%控制时域
 Row=10;%松弛因子
 X0=[0 0 0];%初始位置x，y，yaw都是0
 %[Nr,Nc]=size(Xout);%
@@ -45,9 +43,11 @@ x_real(1,:)=X0;%将车辆的初始位置放入车辆实际状态量矩阵的第�
 x_piao(1,:)=X0-x_real(1,:);%对状态误差的第一行进行赋值
 X_PIAO=zeros(N,Nx*Np);%储存每一个时刻预测时域内状态量误差
 XXX=zeros(N,Nx*Np);%用于保持每个时刻预测的所有状态值
-% kesi=[x_piao,u_piao];%定义误差矩阵状态量误差和控制量误差都有
+% kesi=[x_piao,u_piao];%定义误差矩阵状态量误差和控制量误差都有（增广矩阵）
 Q=eye(Np*Nx);%状态量权重矩阵Q
 R=eye(Nc*Nu);%控制量权重矩阵R
+
+% x_piao(k+1) = A1*x_piao(k)+B1*u_piao(k) 
 for i=1:1:N
     yawref=Xref(i,3);%将参考轨迹的每一时刻的第三个信号赋值为参考横摆角
     A1=[1    0   -vd1*sin(yawref)*T;
@@ -56,8 +56,8 @@ for i=1:1:N
     B1=[cos(yawref)*T   0;
         sin(yawref)*T   0;
         tan(vd2)*T/L vd1*T/L/(cos(vd2))^2];%运动学误差模型控制矩阵
-    %%公式4-10
-    %更新矩阵
+    %% 预测模型
+    % Y = PHI*x_piao(k)+THETA*u_piao(k) 
     PHI_cell=cell(Np,1);
     THETA_cell=cell(Np,Nc);
     for k=1:1:Np
@@ -72,17 +72,19 @@ for i=1:1:N
     end
     PHI=cell2mat(PHI_cell);
     THETA=cell2mat(THETA_cell);
-    %%公式4-19
+    %% 构造目标函数
+    % J=u_piao(k)'*H*u_piao(k) + f'*u_piao(k)
     H=THETA'*Q*THETA+R;
     f=2*THETA'*Q*PHI*x_piao(i,:)';
     A_cons=[];
     B_cons=[];
-    lb=[-0.2;-0.44];
-    ub=[0.2;0.44];
-    tic
+    lb=[-0.2;-0.44]; % 控制增量最小值[vd1,vd2]
+    ub=[0.2;0.44]; % 控制增量最大值
+    tic             %计时器开始
     options=optimset('Algorithm','interior-point-convex');
-    [X,fval(i,1),exitflag(i,1),output(i,1)]=quadprog(H,f,A_cons,B_cons,[],[],lb,ub);
-    toc
+    % 二次型求解最小目标函数时的输入
+    [X,fval(i,1),exitflag(i,1),output(i,1)]=quadprog(H,f,A_cons,B_cons,[],[],lb,ub);%只受到控制增量单步约束
+    toc             %计时器结束
     X_PIAO(i,:)=(PHI*x_piao(i,:)'+THETA*X(1:Np,1))';%保存每一计算步长预测时域的未来状态变化量
     if i<N
          for j=1:1:Np
@@ -103,18 +105,19 @@ for i=1:1:N
     X00=x_real(i,:);
     vd11=vd1+u_piao(i,1);%实际每一步的速度控制量
     vd22=vd2+u_piao(i,2);%实际每一步的转角控制量
+    %状态更新，求解车辆运动学的三个微分方程
     XOUT=dsolve('Dx-vd11*cos(z)=0','Dy-vd11*sin(z)=0','Dz-tan(vd22)/L*vd11=0','x(0)=X00(1)','y(0)=X00(2)','z(0)=X00(3)');
      t=T;%求解器采样时间
      x_real(i+1,1)=eval(XOUT.x);%求解微分方程纵向位移X
      x_real(i+1,2)=eval(XOUT.y);%求解微分方程横向位移Y
      x_real(i+1,3)=eval(XOUT.z);%求解微分方程航向角Yaw
-     %计算每一步的状态量偏差
+     %计算每一步的状态量偏差（误差更新）
      if(i<N)
          x_piao(i+1,:)=x_real(i+1,:)-Xref(i+1,:);
      end
-    u_real(i,1)=vd1+u_piao(i,1);
-    u_real(i,2)=vd2+u_piao(i,2);
-    
+    u_real(i,1)=vd1+u_piao(i,1);%储存实际每一步的速度控制量
+    u_real(i,2)=vd2+u_piao(i,2);%储存实际每一步的转角控制量
+
     figure(1);
     %轨迹图
     hold on;
@@ -125,8 +128,8 @@ for i=1:1:N
     ylabel('纵向位置Y');
     hold on;
     for k=1:1:Np
-         X1(i,k+1)=XXX(i,1+3*(k-1));%储存实际每一步的速度控制量
-         Y1(i,k+1)=XXX(i,2+3*(k-1));%储存实际每一步的转角控制量
+         X1(i,k+1)=XXX(i,1+3*(k-1));
+         Y1(i,k+1)=XXX(i,2+3*(k-1));
          plot(X1(i,:),Y1(i,:),'y');
          hold on;
     end
@@ -138,7 +141,6 @@ for i=1:1:N
     title('跟踪结果对比');
     xlabel('横向位置X');
     ylabel('纵向位置Y');
-
 
     figure(2)
     %偏差图
@@ -163,7 +165,6 @@ for i=1:1:N
     title('航向角误差');
     xlabel('采样时间T');
     ylabel('航向误差ΔYaw(rad)')
-
 
     figure(3)
     %状态量
